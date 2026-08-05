@@ -156,3 +156,14 @@
     color: var(--color-foreground);
   }
 }
+
+@utility glass-panel {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-glass);
+  backdrop-filter: blur(22px) saturate(160%);
+}
+
+@utility page-gradient {
+  background: var(--gradient-page);
+}
