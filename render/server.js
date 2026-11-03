@@ -1,6 +1,6 @@
 import express from "express";
 import { spawn } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,24 @@ app.use(express.json({ limit: "16kb" }));
 
 const TOKEN = process.env.YTDLP_SERVICE_TOKEN;
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// Cookies in Netscape format. Prefer the base64 variable because multiline
+// values are easy to break in env var fields.
+function loadCookies() {
+  const b64 = process.env.YTDLP_COOKIES_B64;
+  if (b64 && b64.trim()) {
+    try {
+      return Buffer.from(b64.trim(), "base64").toString("utf8");
+    } catch {
+      return "";
+    }
+  }
+  const raw = process.env.YTDLP_COOKIES;
+  return raw && raw.trim() ? raw : "";
+}
+
+app.get("/health", (_req, res) =>
+  res.json({ ok: true, cookies: Boolean(loadCookies()) }),
+);
 
 app.post("/extract", async (req, res) => {
   if (TOKEN && req.headers.authorization !== `Bearer ${TOKEN}`) {
@@ -28,7 +45,8 @@ app.post("/extract", async (req, res) => {
   let dir;
   try {
     dir = await mkdtemp(join(tmpdir(), "transcriber-"));
-    await run("yt-dlp", [
+
+    const args = [
       "--no-playlist",
       "--quiet",
       "--no-warnings",
@@ -43,9 +61,19 @@ app.post("/extract", async (req, res) => {
       "200M",
       "-o",
       join(dir, "audio.%(ext)s"),
-      "--",
-      url,
-    ]);
+    ];
+
+    // yt-dlp can rewrite the cookie file, so each request gets its own copy
+    // inside the temp dir, which is deleted in the finally block.
+    const cookies = loadCookies();
+    if (cookies) {
+      const cookiePath = join(dir, "cookies.txt");
+      await writeFile(cookiePath, cookies, { mode: 0o600 });
+      args.push("--cookies", cookiePath);
+    }
+
+    args.push("--", url);
+    await run("yt-dlp", args);
 
     const file = (await readdir(dir)).find((f) => f.startsWith("audio."));
     if (!file) throw new Error("No audio track was produced for that link.");
@@ -57,7 +85,7 @@ app.post("/extract", async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err?.message || "Download failed" });
   } finally {
-    // Always clean up temporary audio files.
+    // Always clean up temporary audio and cookie files.
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 });
